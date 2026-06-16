@@ -49,6 +49,8 @@ async function loadFilters() {
   return {
     keywords: data?.keywords?.length ? data.keywords : DEFAULT_KEYWORDS,
     excludeKeywords: data?.exclude_keywords?.length ? data.exclude_keywords : DEFAULT_EXCLUDES,
+    locations: data?.locations?.length ? data.locations : ['Cleveland, OH', 'Remote'],
+    excludeCompanies: data?.exclude_companies?.length ? data.exclude_companies : [],
     remoteOnly: data?.remote_only || false,
   }
 }
@@ -115,20 +117,36 @@ async function fetchRemotiveJobs() {
   return jobs
 }
 
-function isRelevant(job, excludeKeywords) {
+function isRelevant(job, excludeKeywords, excludeCompanies, locations, remoteOnly) {
   const title = job.title.toLowerCase()
+  const company = job.company.toLowerCase()
+  const location = job.location.toLowerCase()
+  const isRemote = job.is_remote || location.includes('remote')
+
+  // Reject excluded companies
+  if (excludeCompanies.some(c => company.includes(c.toLowerCase()))) return false
 
   // Reject if title contains any excluded keyword
-  const excluded = excludeKeywords.some(kw => title.includes(kw.toLowerCase()))
-  if (excluded) return false
+  if (excludeKeywords.some(kw => title.includes(kw.toLowerCase()))) return false
 
   // Require title to contain at least one relevant keyword
-  const relevant = TITLE_MUST_INCLUDE.some(kw => title.includes(kw.toLowerCase()))
-  return relevant
+  if (!TITLE_MUST_INCLUDE.some(kw => title.includes(kw.toLowerCase()))) return false
+
+  // Location filter
+  if (remoteOnly) return isRemote
+
+  if (locations.length > 0) {
+    const locationTargets = locations.map(l => l.toLowerCase())
+    const wantsRemote = locationTargets.some(l => l.includes('remote'))
+    if (isRemote && wantsRemote) return true
+    return locationTargets.some(l => !l.includes('remote') && location.includes(l))
+  }
+
+  return true
 }
 
-async function upsertJobs(jobs, excludeKeywords) {
-  const relevant = jobs.filter(j => isRelevant(j, excludeKeywords))
+async function upsertJobs(jobs, excludeKeywords, excludeCompanies, locations, remoteOnly) {
+  const relevant = jobs.filter(j => isRelevant(j, excludeKeywords, excludeCompanies, locations, remoteOnly))
   console.log(`${relevant.length} jobs passed relevance filter (out of ${jobs.length} raw)`)
   if (!relevant.length) return []
 
@@ -200,7 +218,7 @@ async function main() {
   const allJobs = [...adzunaJobs, ...remotiveJobs]
   console.log(`Fetched ${allJobs.length} raw jobs`)
 
-  const newJobs = await upsertJobs(allJobs, excludeKeywords)
+  const newJobs = await upsertJobs(allJobs, excludeKeywords, excludeCompanies, locations, remoteOnly)
   console.log(`${newJobs.length} new jobs inserted`)
 
   await sendDigest(newJobs)
