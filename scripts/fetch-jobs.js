@@ -55,35 +55,48 @@ async function loadFilters() {
   }
 }
 
-async function fetchAdzunaJobs(keywords, remoteOnly) {
+async function fetchAdzunaJobs(keywords, locations, remoteOnly) {
   const jobs = []
   const appId = process.env.ADZUNA_APP_ID
   const appKey = process.env.ADZUNA_APP_KEY
 
-  for (const term of keywords) {
-    try {
-      let url = `https://api.adzuna.com/v1/api/jobs/us/search/1?app_id=${appId}&app_key=${appKey}&results_per_page=20&what_phrase=${encodeURIComponent(term)}&content-type=application/json&sort_by=date&max_days_old=3`
-      if (remoteOnly) url += '&where=remote'
+  // Build list of where params: one per non-remote location + "remote" if wanted
+  const whereParams = []
+  if (!remoteOnly) {
+    locations.filter(l => !l.toLowerCase().includes('remote')).forEach(l => {
+      whereParams.push(l.split(',')[0].trim()) // just the city name
+    })
+  }
+  const wantsRemote = remoteOnly || locations.some(l => l.toLowerCase().includes('remote'))
+  if (wantsRemote) whereParams.push('remote')
+  if (!whereParams.length) whereParams.push('') // no location filter
 
-      const res = await fetch(url)
-      const data = await res.json()
-      if (data.results) {
-        jobs.push(...data.results.map(j => ({
-          external_id: `adzuna_${j.id}`,
-          title: j.title,
-          company: j.company?.display_name || 'Unknown',
-          location: j.location?.display_name || 'Remote',
-          url: j.redirect_url,
-          description: j.description,
-          source: 'adzuna',
-          is_remote: j.location?.display_name?.toLowerCase().includes('remote') || false,
-          salary_min: j.salary_min ? Math.round(j.salary_min) : null,
-          salary_max: j.salary_max ? Math.round(j.salary_max) : null,
-          posted_at: j.created,
-        })))
+  for (const term of keywords) {
+    for (const where of whereParams) {
+      try {
+        let url = `https://api.adzuna.com/v1/api/jobs/us/search/1?app_id=${appId}&app_key=${appKey}&results_per_page=15&what_phrase=${encodeURIComponent(term)}&content-type=application/json&sort_by=date&max_days_old=3`
+        if (where) url += `&where=${encodeURIComponent(where)}`
+
+        const res = await fetch(url)
+        const data = await res.json()
+        if (data.results) {
+          jobs.push(...data.results.map(j => ({
+            external_id: `adzuna_${j.id}`,
+            title: j.title,
+            company: j.company?.display_name || 'Unknown',
+            location: j.location?.display_name || 'Remote',
+            url: j.redirect_url,
+            description: j.description,
+            source: 'adzuna',
+            is_remote: j.location?.display_name?.toLowerCase().includes('remote') || false,
+            salary_min: j.salary_min ? Math.round(j.salary_min) : null,
+            salary_max: j.salary_max ? Math.round(j.salary_max) : null,
+            posted_at: j.created,
+          })))
+        }
+      } catch (err) {
+        console.error(`Adzuna error for "${term}" / "${where}":`, err.message)
       }
-    } catch (err) {
-      console.error(`Adzuna error for "${term}":`, err.message)
     }
   }
   return jobs
@@ -136,10 +149,13 @@ function isRelevant(job, excludeKeywords, excludeCompanies, locations, remoteOnl
   if (remoteOnly) return isRemote
 
   if (locations.length > 0) {
-    const locationTargets = locations.map(l => l.toLowerCase())
-    const wantsRemote = locationTargets.some(l => l.includes('remote'))
+    const wantsRemote = locations.some(l => l.toLowerCase().includes('remote'))
     if (isRemote && wantsRemote) return true
-    return locationTargets.some(l => !l.includes('remote') && location.includes(l))
+    // Match on city name only (Adzuna returns "Cleveland, Cuyahoga County" not "Cleveland, OH")
+    const cities = locations
+      .filter(l => !l.toLowerCase().includes('remote'))
+      .map(l => l.split(',')[0].toLowerCase().trim())
+    return cities.some(city => location.includes(city))
   }
 
   return true
@@ -211,7 +227,7 @@ async function main() {
 
   console.log('Fetching jobs...')
   const [adzunaJobs, remotiveJobs] = await Promise.all([
-    fetchAdzunaJobs(keywords, remoteOnly),
+    fetchAdzunaJobs(keywords, locations, remoteOnly),
     fetchRemotiveJobs(),
   ])
 
