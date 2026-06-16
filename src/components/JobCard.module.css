@@ -1,0 +1,60 @@
+.card {
+  display: block;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  padding: 16px 20px;
+  transition: box-shadow 0.15s, border-color 0.15s;
+  cursor: pointer;
+}
+
+.card:hover {
+  box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+  border-color: #d1d5db;
+}
+
+.top {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #111;
+  margin-bottom: 2px;
+}
+
+.company {
+  font-size: 13px;
+  color: #6b7280;
+}
+
+.source {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #9ca3af;
+  white-space: nowrap;
+  padding-top: 2px;
+}
+
+.bottom {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.location, .salary, .date {
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.salary {
+  color: #059669;
+  font-weight: 500;
+}
