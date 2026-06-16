@@ -8,34 +8,61 @@ const supabase = createClient(
 
 const resend = new Resend(process.env.RESEND_API_KEY)
 
-const SEARCH_TERMS = [
+const DEFAULT_KEYWORDS = [
   'growth associate',
   'marketing coordinator',
   'community manager',
   'operations associate',
   'product coordinator',
   'developer relations',
-  'crypto marketing',
-  'web3 community',
-  'AI operations',
   'growth analyst',
   'marketing analyst',
+  'content marketing',
+  'social media manager',
+  'crypto marketing',
+  'web3 community',
 ]
 
-const EXCLUDE_KEYWORDS = [
-  'senior', 'sr.', 'lead', 'director', 'manager', 'head of',
-  'cold calling', 'BDR', 'SDR', 'account executive', 'quota',
-  '5+ years', '7+ years', '10+ years'
+const DEFAULT_EXCLUDES = [
+  'BDR', 'SDR', 'cold calling', 'account executive', 'quota',
+  'senior', 'sr.', 'director', 'vice president', 'vp',
+  '5+ years', '7+ years', '10+ years',
+  'forklift', 'driver', 'warehouse', 'retail', 'cashier',
+  'nurse', 'technician', 'mechanic', 'electrician',
 ]
 
-async function fetchAdzunaJobs() {
+// Title must contain at least one of these to be considered relevant
+const TITLE_MUST_INCLUDE = [
+  'marketing', 'growth', 'operations', 'community', 'product',
+  'coordinator', 'analyst', 'developer relations', 'devrel',
+  'content', 'social media', 'brand', 'partnerships',
+  'crypto', 'web3', 'blockchain', 'ai ', 'communications',
+]
+
+async function loadFilters() {
+  const { data } = await supabase
+    .from('filters')
+    .select('*')
+    .eq('name', 'default')
+    .single()
+
+  return {
+    keywords: data?.keywords?.length ? data.keywords : DEFAULT_KEYWORDS,
+    excludeKeywords: data?.exclude_keywords?.length ? data.exclude_keywords : DEFAULT_EXCLUDES,
+    remoteOnly: data?.remote_only || false,
+  }
+}
+
+async function fetchAdzunaJobs(keywords, remoteOnly) {
   const jobs = []
   const appId = process.env.ADZUNA_APP_ID
   const appKey = process.env.ADZUNA_APP_KEY
 
-  for (const term of SEARCH_TERMS.slice(0, 5)) {
+  for (const term of keywords) {
     try {
-      const url = `https://api.adzuna.com/v1/api/jobs/us/search/1?app_id=${appId}&app_key=${appKey}&results_per_page=20&what=${encodeURIComponent(term)}&content-type=application/json&sort_by=date&max_days_old=1`
+      let url = `https://api.adzuna.com/v1/api/jobs/us/search/1?app_id=${appId}&app_key=${appKey}&results_per_page=20&what_phrase=${encodeURIComponent(term)}&content-type=application/json&sort_by=date&max_days_old=3`
+      if (remoteOnly) url += '&where=remote'
+
       const res = await fetch(url)
       const data = await res.json()
       if (data.results) {
@@ -61,41 +88,48 @@ async function fetchAdzunaJobs() {
 }
 
 async function fetchRemotiveJobs() {
-  try {
-    const res = await fetch('https://remotive.com/api/remote-jobs?category=marketing&limit=50')
-    const data = await res.json()
-    const marketingJobs = data.jobs || []
+  const categories = ['marketing', 'product', 'all-others']
+  const jobs = []
 
-    const res2 = await fetch('https://remotive.com/api/remote-jobs?category=product&limit=50')
-    const data2 = await res2.json()
-    const productJobs = data2.jobs || []
-
-    return [...marketingJobs, ...productJobs].map(j => ({
-      external_id: `remotive_${j.id}`,
-      title: j.title,
-      company: j.company_name,
-      location: 'Remote',
-      url: j.url,
-      description: j.description,
-      source: 'remotive',
-      is_remote: true,
-      salary_min: null,
-      salary_max: null,
-      posted_at: j.publication_date,
-    }))
-  } catch (err) {
-    console.error('Remotive error:', err.message)
-    return []
+  for (const cat of categories) {
+    try {
+      const res = await fetch(`https://remotive.com/api/remote-jobs?category=${cat}&limit=50`)
+      const data = await res.json()
+      jobs.push(...(data.jobs || []).map(j => ({
+        external_id: `remotive_${j.id}`,
+        title: j.title,
+        company: j.company_name,
+        location: 'Remote',
+        url: j.url,
+        description: j.description,
+        source: 'remotive',
+        is_remote: true,
+        salary_min: null,
+        salary_max: null,
+        posted_at: j.publication_date,
+      })))
+    } catch (err) {
+      console.error(`Remotive error for "${cat}":`, err.message)
+    }
   }
+  return jobs
 }
 
-function isRelevant(job) {
-  const text = `${job.title} ${job.description}`.toLowerCase()
-  return !EXCLUDE_KEYWORDS.some(kw => text.includes(kw.toLowerCase()))
+function isRelevant(job, excludeKeywords) {
+  const title = job.title.toLowerCase()
+
+  // Reject if title contains any excluded keyword
+  const excluded = excludeKeywords.some(kw => title.includes(kw.toLowerCase()))
+  if (excluded) return false
+
+  // Require title to contain at least one relevant keyword
+  const relevant = TITLE_MUST_INCLUDE.some(kw => title.includes(kw.toLowerCase()))
+  return relevant
 }
 
-async function upsertJobs(jobs) {
-  const relevant = jobs.filter(isRelevant)
+async function upsertJobs(jobs, excludeKeywords) {
+  const relevant = jobs.filter(j => isRelevant(j, excludeKeywords))
+  console.log(`${relevant.length} jobs passed relevance filter (out of ${jobs.length} raw)`)
   if (!relevant.length) return []
 
   const { data, error } = await supabase
@@ -113,33 +147,37 @@ async function sendDigest(newJobs) {
     return
   }
 
-  const jobRows = newJobs.slice(0, 20).map(j => `
+  const jobRows = newJobs.slice(0, 25).map(j => `
     <tr>
       <td style="padding:12px 8px;border-bottom:1px solid #eee;">
         <a href="${j.url}" style="font-weight:600;color:#2563eb;text-decoration:none;">${j.title}</a><br/>
-        <span style="color:#555;font-size:13px;">${j.company} · ${j.location}</span>
+        <span style="color:#555;font-size:13px;">${j.company} · ${j.is_remote ? 'Remote' : j.location}</span>
       </td>
-      <td style="padding:12px 8px;border-bottom:1px solid #eee;text-align:right;">
-        <span style="font-size:12px;color:#888;">${j.source}</span>
+      <td style="padding:12px 8px;border-bottom:1px solid #eee;text-align:right;white-space:nowrap;">
+        ${j.salary_min ? `<span style="color:#059669;font-size:13px;">$${j.salary_min.toLocaleString()}</span><br/>` : ''}
+        <span style="font-size:11px;color:#aaa;text-transform:uppercase;">${j.source}</span>
       </td>
     </tr>
   `).join('')
 
   const html = `
-    <div style="font-family:sans-serif;max-width:600px;margin:0 auto;">
-      <h2 style="color:#111;">Surfaced — ${new Date().toLocaleDateString('en-US', { weekday:'long', month:'long', day:'numeric' })}</h2>
-      <p style="color:#555;">${newJobs.length} new jobs found today matching your profile.</p>
+    <div style="font-family:sans-serif;max-width:620px;margin:0 auto;padding:24px;">
+      <h2 style="color:#111;margin-bottom:4px;">Surfaced</h2>
+      <p style="color:#6b7280;font-size:14px;margin-bottom:24px;">
+        ${new Date().toLocaleDateString('en-US', { weekday:'long', month:'long', day:'numeric' })} · ${newJobs.length} new jobs found
+      </p>
       <table style="width:100%;border-collapse:collapse;">
         ${jobRows}
       </table>
-      <p style="color:#999;font-size:12px;margin-top:24px;">
-        <a href="https://surfaced.netlify.app" style="color:#2563eb;">View all jobs →</a>
+      <p style="margin-top:24px;">
+        <a href="https://getsurfaced.netlify.app" style="background:#111;color:#fff;padding:10px 20px;border-radius:6px;font-size:14px;font-weight:600;text-decoration:none;">View all jobs →</a>
       </p>
+      <p style="color:#d1d5db;font-size:11px;margin-top:24px;">Surfaced · Unsubscribe</p>
     </div>
   `
 
   await resend.emails.send({
-    from: 'Surfaced <digest@surfaced.app>',
+    from: 'Surfaced <onboarding@resend.dev>',
     to: process.env.DIGEST_EMAIL_TO,
     subject: `${newJobs.length} new jobs for you — ${new Date().toLocaleDateString()}`,
     html,
@@ -149,16 +187,20 @@ async function sendDigest(newJobs) {
 }
 
 async function main() {
+  console.log('Loading filters from Supabase...')
+  const { keywords, excludeKeywords, remoteOnly } = await loadFilters()
+  console.log(`Using ${keywords.length} search terms, ${excludeKeywords.length} exclude terms`)
+
   console.log('Fetching jobs...')
   const [adzunaJobs, remotiveJobs] = await Promise.all([
-    fetchAdzunaJobs(),
+    fetchAdzunaJobs(keywords, remoteOnly),
     fetchRemotiveJobs(),
   ])
 
   const allJobs = [...adzunaJobs, ...remotiveJobs]
   console.log(`Fetched ${allJobs.length} raw jobs`)
 
-  const newJobs = await upsertJobs(allJobs)
+  const newJobs = await upsertJobs(allJobs, excludeKeywords)
   console.log(`${newJobs.length} new jobs inserted`)
 
   await sendDigest(newJobs)
